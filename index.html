@@ -1,0 +1,513 @@
+﻿
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <title>CKY parsing demo</title>
+    <script charset="utf-8">
+      function array_index_of(a, e) {
+        if (a != null) {
+          for (var i = 0; i < a.length; ++i) {
+            if (a[i] == e)
+              return i;
+          }
+        }
+        return -1;
+      }
+
+      function merge_arrays(a, b) {
+        for (var i = 0; i < b.length; ++i) {
+          if (array_index_of(a, b[i]) == -1) {a.push(b[i]);}
+          //combine(a,b[i]);
+        }
+      }
+
+      function Grammar(grammar) {
+        this._terminal_rules = new Array();
+        this._non_terminal_rules = new Array();
+
+        var re_rule = /^(\w+)\s*->\s*(\w+)(?:\s+(\w+))?\s*\.?$/;
+        grammar = grammar.split(/\r?\n/);
+
+        for (var i = 0; i < grammar.length; ++i) {
+          var r = grammar[i];
+          if (r.length == 0)
+            continue;
+          var a = re_rule.exec(r);
+          if (a == null)
+            throw "bad rule syntax: " + r;
+          //If nonterminal
+          if (a[3]) {
+            var new_rule = new Array(a[1], a[2], a[3]);
+            this._non_terminal_rules.push(new_rule);
+            if (this._s == null)
+              this._s = new String(a[1]);
+          }
+          //Terminal
+          else
+          {
+            var new_rule = new Array(a[1], a[2]);
+            this._terminal_rules.push(new_rule);
+          }
+        }
+
+        this.start_symbol = function() { return this._s; }
+
+        this.left_hand_sides = function(s) {
+          var res = new Array();
+          for (var i = 0; i < this._terminal_rules.length; ++i) {
+            var r = this._terminal_rules[i];
+            if (r[1] == s)
+              res.push(r[0]);
+          }
+          return res;
+        }
+
+        this.left_hand_sides2 = function(s, t) {
+          var res = new Array();
+          for (var i = 0; i < this._non_terminal_rules.length; ++i) {
+            var r = this._non_terminal_rules[i];
+            if (r[1] == s && r[2] == t)
+              res.push(r[0]);
+          }
+          return res;
+        }
+
+        return this;
+      }
+      //Seperated words
+      function tokenize_sentence(sentence) {
+        var s = sentence.split(/\s+/);
+        return s;
+      }
+
+      function allocate_chart(N) {
+        var c = new Array(N + 1);
+        c[0] = new Array(N);
+        for (var i = 1; i <= N; ++i) {
+          c[i] = new Array(N - (i - 1));
+        }
+        return c;
+      }
+
+      function cky_offline(grammar, sentence, eh) {
+        var G = new Grammar(grammar);
+        var S = tokenize_sentence(sentence);
+        var N = S.length;
+        var C = allocate_chart(N);
+
+        eh.start(S);
+        //Change
+        for (var x = N-1; x >=0 ; --x) {
+          var y = N-x-1;
+          eh.active_cell_changed(x, y);
+          C[x][y] = G.left_hand_sides(S[y]);
+          eh.cell_updated(x, y, C[x][y],0);
+        }
+        for (var x = 1; x < N; ++x) {
+          //change
+          for (var y = x-1; y >=0 ; --y) {
+            var nt = C[N-1-y][x];
+
+            eh.active_cell_changed(N-1-y, x);
+            //chnage
+            for (var i = x; i > y; --i ) { // chay theo dong
+
+              var nts2 = C[N-1-i][x];
+              var nts1 = C[N-1-y][i -1];
+
+              eh.attempt_match(N-1-i,x,N-1-y,i-1);
+              if (nts1 != null && nts2 != null) {
+                for (var ii = 0; ii < nts1.length; ++ii) {
+                var nt1 = nts1[ii];
+                for (var jj = 0; jj < nts2.length; ++jj) {
+                  var nt2 = nts2[jj];
+                  var rhss = G.left_hand_sides2(nt1, nt2);
+                  if (rhss == 0 || rhss.length == 0)
+                  continue;
+                  if (nt == null) {
+                  nt = new Array();
+                  C[N-1-y][x] = nt;
+                  }
+                  merge_arrays(nt, rhss);
+                  //change
+                  eh.found_match(N-1-i,x,N-1-y,i-1);
+
+                  f1 = i;
+                  f2 = y;
+                  f3 = x+1;
+                  f4 = i;
+                  pos = nts1+"("+f2 +"," + f4 + ")"+ " + "+nts2 +"("+ f1 + "," + f3 + ")";
+
+                  var cont = nt + "("+f2+","+f3+")"+ "<br />"+pos;
+                  eh.cell_updated(N-1-y, x, cont,1)
+              }
+              }
+            }
+
+        }
+          }
+        }
+
+        var accepted = array_index_of(C[N - 1][0], G.start_symbol()) != -1;
+        eh.end(accepted);
+        return accepted;
+      }
+
+
+      </script>
+
+      <script>
+
+      var COLOR_NORMAL_CELL   = "#F5F5F5";
+      var COLOR_ACTIVE_CELL   = "#FF4500";
+      var COLOR_TEST_CELL     = "#ADFF2F";
+      var COLOR_MATCH_CELL    = "#87CEEB";
+      var COLOR_UPDATE_CELL   = "#D8BFD8";
+
+      var UPDATE_INTERVAL = 300;
+      var _update_actions = new Array();
+      var _update_action_idx = 0;
+
+      var _active_cell = [-1,-1];
+      var _context_cells = [-1,-1,-1,-1];
+
+      var _update_timer_id = -1;
+
+      var _is_animation_running = false;
+
+
+      function paint_cell(i, j, color) {
+        var cell = entry2cell(i, j);
+        cell.bgColor = color;
+      }
+
+      function dump_object(o) {
+        var s = "";
+        for (var p in o) { s += p + ":" + o[p] + ";  "; }
+        alert(s);
+      }
+
+      function update_ui() {
+        if (_update_action_idx == _update_actions.length) {
+          clearInterval(_update_timer_id);
+          _update_action_idx = 0;
+          _is_animation_running = false;
+          window.status = "Animation done. Click on the chart to restart";
+          return;
+        }
+        var action = _update_actions[_update_action_idx++];
+        if (action == "--")
+          return; // sleep for a while
+        eval(action);
+      }
+
+      function set_entry_content(i, j, content,flag) {
+        var cell = entry2cell(i, j);
+        k = tchart.rows.length - 1 - i;
+        l = j + 1;
+        if(flag==0)cell.innerHTML = content + "("+k+","+l+")";
+        if(flag==1)cell.innerHTML=content;
+      }
+
+      function entry2cell(i, j) {
+        return tchart.rows.item(tchart.rows.length - 1 - i).cells.item(j);
+      }
+
+      function do_parse() {
+        var cky_event_handler = new Object();
+        //Preprocessing
+        cky_event_handler.start = function(s) {
+          //create chart
+          create_chart(s);
+          //set sentence
+          set_sentence(s);
+          cky_input.style.display = "none";
+          cky_output.style.display = "block";
+          cky_output.focus();
+        }
+
+        cky_event_handler.end = function(accepted) {
+          var s = "paint_cell("+_context_cells[0]+","+_context_cells[1]+",COLOR_NORMAL_CELL);";
+          s += "paint_cell("+_context_cells[2]+","+_context_cells[3]+",COLOR_NORMAL_CELL);";
+          s += "paint_cell("+_active_cell[0]+","+_active_cell[1]+",COLOR_NORMAL_CELL);";
+
+          _update_actions.push(s);
+          _update_action_idx = 0;
+
+          pause_resume_animation();
+        }
+
+        cky_event_handler.cell_updated = function(i, j, content,flag) {
+          _update_actions.push("paint_cell("+i+","+j+",COLOR_ACTIVE_CELL);" +
+            "set_entry_content("+i+","+j+",\""+content +"\","+flag+");");
+          _update_actions.push("--");
+          _update_actions.push("--");
+          _update_actions.push("--");
+          _update_actions.push("--");
+        }
+
+        cky_event_handler.active_cell_changed = function(i, j) {
+          var s = "";
+          if (_context_cells[0] != -1) {
+            s += "paint_cell("+_context_cells[0]+","+_context_cells[1]+",COLOR_NORMAL_CELL);";
+            s += "paint_cell("+_context_cells[2]+","+_context_cells[3]+",COLOR_NORMAL_CELL);";
+          }
+          if (_active_cell[0] != -1) {
+            s += "paint_cell("+_active_cell[0]+","+_active_cell[1]+",COLOR_NORMAL_CELL);";
+          }
+          s += "paint_cell("+i+","+j+",COLOR_ACTIVE_CELL);";
+          _active_cell[0] = i;
+          _active_cell[1] = j;
+          _update_actions.push(s);
+        }
+
+        cky_event_handler.attempt_match = function(i, j, k, l) {
+          var s = "";
+          if (_context_cells[0] != -1) {
+            s += "paint_cell("+_context_cells[0]+","+_context_cells[1]+",COLOR_NORMAL_CELL);";
+            s += "paint_cell("+_context_cells[2]+","+_context_cells[3]+",COLOR_NORMAL_CELL);";
+          }
+          s += "paint_cell("+i+","+j+",COLOR_TEST_CELL);";
+          s += "paint_cell("+k+","+l+",COLOR_TEST_CELL);";
+          _update_actions.push(s);
+          _context_cells[0] = i;
+          _context_cells[1] = j;
+          _context_cells[2] = k;
+          _context_cells[3] = l;
+        }
+
+        cky_event_handler.found_match = function(i, j, k, l) {
+          var s = "";
+          s += "paint_cell("+i+","+j+",COLOR_MATCH_CELL);";
+          s += "paint_cell("+k+","+l+",COLOR_MATCH_CELL);";
+          s += "paint_cell("+_active_cell[0]+","+_active_cell[1]+",COLOR_MATCH_CELL);";
+
+          _update_actions.push(s);
+          _update_actions.push("--");
+          _update_actions.push("--");
+        }
+
+        try {
+          //DO CKY
+          var str_input = idgram.value;
+          //str_input = str_input.replace("")
+          cky_offline(str_input, idsen.value, cky_event_handler);
+        }
+        catch (e) {
+          alert(e);
+          return;
+        }
+      }
+
+      //Store grammar rule
+      function create_chart(s) {
+        var n = s.length;
+        var tb = tchart.firstChild;
+        if (tb == null || typeof(tb) == 'undefined') {
+          tb = document.createElement("TBODY");
+          tchart.appendChild(tb);
+        }
+
+        //Create table
+        for (var i = 0; i <n; ++i) {
+          var row = document.createElement("TR");
+          tb.appendChild(row);
+          for (var j = 0; j < n; ++j) {
+            var cell = document.createElement("TD");
+            row.appendChild(cell);
+        //---------------------------------------------------------------------------------------
+            cell.setAttribute("width", (1 / n) * 100.00 + "%");
+            cell.setAttribute("align", "center");
+            cell.setAttribute("bgColor", COLOR_NORMAL_CELL);
+            cell.innerHTML = "&nbsp;";
+          }
+        }
+      }
+
+
+
+
+      function set_sentence(s) {
+        var n = s.length;
+
+      /////////////////////////////////////
+      // Add column number
+      var rt = rowsCount.firstChild;
+      rt = document.createElement("TBODY");
+      rowsCount.appendChild(rt);
+      var row1 = document.createElement("TR");
+      rt.appendChild(row1);
+      for (var j = 0; j < n; ++j) {
+      var cell = document.createElement("TD");
+      row1.appendChild(cell);
+      cell.setAttribute("width", (1 / n) * 100.00 + "%");
+          cell.setAttribute("align", "center");
+          cell.innerHTML = j+1;
+      }
+      // Add Row count
+      ct = rowsCount.firstChild;
+      ct = document.createElement("TBODY");
+      columnsCount.appendChild(ct);
+      for (var i = 0; i <= n; ++i) {
+          var row = document.createElement("TR");
+      ct.appendChild(row);
+          for (var j = 0; j < 1; ++j) {
+            var cell = document.createElement("TD");
+            row.appendChild(cell);
+        //---------------------------------------------------------------------------------------
+            cell.setAttribute("width", (1 / n) * 100.00 + "%");
+            cell.setAttribute("align", "buttom");
+        cell.innerHTML = i-1;
+        if(cell.innerHTML == -1 )
+        {
+        cell.innerHTML = 0;
+        }
+          }
+        }
+
+      // Add Text
+      var tb = tsentence.firstChild;
+      if (tb == null || typeof(tb) == 'undefined') {
+          tb = document.createElement("TBODY");
+          tsentence.appendChild(tb);
+        }
+        var row = document.createElement("TR");
+        tb.appendChild(row);
+        for (var i = 0; i < n; ++i) {
+          var cell = document.createElement("TD");
+          row.appendChild(cell);
+          cell.setAttribute("width", (1 / n) * 100.00 + "%");
+          cell.setAttribute("align", "center");
+          cell.innerHTML = s[i];
+        }
+
+      }
+
+      function delete_chart() {
+        cky_input.style.display = "block";
+        cky_output.style.display = "none";
+
+        clearInterval(_update_timer_id);
+        _update_actions = new Array();
+
+        tchart.removeChild(tchart.firstChild);
+        tsentence.removeChild(tsentence.firstChild);
+      rowCount.removeChild(rowsCount.firstChild);
+      }
+
+      function clear_chart() {
+        var cells = tchart.getElementsByTagName("TD");
+        for (var i = 0; i < cells.length; ++i) {
+          cells[i].innerHTML = "&nbsp;";
+        }
+      }
+
+      function pause_resume_animation() {
+        if (_is_animation_running) {
+          clearInterval(_update_timer_id);
+          window.status = "Animation paused. Click on the chart to resume";
+        }
+        else {
+          if (_update_action_idx == 0)
+            clear_chart();
+          _update_timer_id = setInterval("update_ui()", UPDATE_INTERVAL);
+          window.status = "Animation running. Click on the chart to pause";
+        }
+        _is_animation_running = !_is_animation_running;
+      }
+
+      function chart_key_handler(event) {
+        switch (event.keyCode) {
+          case 0x0D:  // enter
+          case 0x20:  // space
+            pause_resume_animation();
+            break;
+          case 0x1B: // escape
+            delete_chart();
+            window.status = "";
+            _is_animation_running = false;
+            clearInterval(_update_timer_id);
+            break;
+          default:
+            return false; // give the other handlers chance to process the event
+        }
+        return true;
+      }
+
+
+    </script>
+    <script type="text/javascript" src="chrome-extension://bfbmjmiodbnnpllbbbfblcplfjjepjdn/js/injected.js"></script>
+    <script>window["_GOOG_TRANS_EXT_VER"] = "1";</script>
+  </head>
+  <body>
+  <h1 style="color:brown;font-size:30px;">CKY PARSER - CS226.H21.KHTN</h1>
+  <h2>Author: Nguyen Cao Minh - Lam Han Vuong</h2>
+  <h3 style="color:darkblue;">Reference from CKY parser: <span style="color:lightblue;font-size:20px;">http://lxmls.it.pt/2015/cky.html</span></h3>
+  <div>
+    <div id="cky_input">
+	    <p>
+        <span class="label">Câu:</span>
+        <br>
+        <input type="text" id="idsen" value="Nam hoc o thanh pho" size="80"><br>
+      </p>
+      <span class="label">Grammar <i>(theo ngữ pháp CNF)</i></span><br>
+      <textarea id="idgram" cols="70" rows="13">
+S -> NP VP
+NP -> NN NNP
+NP -> CD NP
+NP -> UN NP
+NP -> NN NN
+NP -> NN JJ
+VP -> VB NP
+VP -> VB PP
+VP -> RB VP
+PP -> IN NP
+NP -> Nam
+NP -> No
+NNP -> Tam
+NN -> ong
+NN -> nguoi
+NN -> con
+NN -> ca
+NN -> thanh
+NN -> pho
+VB -> co
+VB -> nuoi
+VB -> hoc
+VB -> o
+CD -> mot
+CD -> hai
+UN -> con
+IN -> o
+RB -> dang
+JJ -> vang</textarea>
+      <p>
+        <span class="label">Thời gian cập nhật biểu đồ <i>(ms)</i></span><br>
+        <input type="text" id="idupdint" value="50" size="3">
+      </p>
+      <p>
+        <input type="button" style="width:140;height:40" value="Bắt đầu phân tích" onclick="UPDATE_INTERVAL = idupdint.value; do_parse();">
+      </p>
+    </div>
+  </div>
+  <div id="cky_output" tabindex="1" style="display:none" onclick="pause_resume_animation()" onkeydown="chart_key_handler(event)">
+    <table id="columnsCount" width="3%" height="100%" bgcolor="DD0000" align="left"></table>
+	  <table id="tsentence" width="97%" height="5%" bgcolor="FFEA6E"></table>
+	  <table id="rowsCount" width="97%" height="3%" bgcolor="DD0000"></table>
+	  <table id="tchart" width="97%" height="90%" border="1" align="center"></table>
+  </div>
+    <!-- Start of StatCounter Code -->
+  <script type="text/javascript">
+    var sc_project=5134546;
+    var sc_invisible=1;
+    var sc_partition=58;
+    var sc_click_stat=1;
+    var sc_security="14632409";
+  </script>
+</html>
+<!--<script type="text/javascript" src="./CKY parsing demo_files/counter.js"></script><noscript>&lt;div
+class="statcounter"&gt;&lt;a title="my space counter"
+href="http://www.statcounter.com/myspace/"
+target="_blank"&gt;&lt;img class="statcounter"
+src="http://c.statcounter.com/5134546/0/14632409/1/" alt="my
+space counter" &gt;&lt;/a&gt;&lt;/div&gt;</noscript>-->
